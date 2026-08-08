@@ -1,15 +1,21 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import Redis from 'ioredis'
+import getRawBody from 'raw-body'
+import crypto from 'crypto'
 
-// Protected revalidate endpoint with optional IP allowlist, rate limiting, and now
-// optional revalidation of arbitrary routes passed in the POST body (still protected).
-// Environment variables:
+// Protected revalidate endpoint with optional IP allowlist, rate limiting, HMAC validation,
+// and automatic retries/backoff for failed route revalidations.
+// Environment variables (new/updated):
 // - REVALIDATE_SECRET: required secret to authorize revalidation calls
+// - REVALIDATE_HMAC_SECRET: optional HMAC key; if set, requests must include a valid HMAC signature
+// - REVALIDATE_HMAC_TOLERANCE_SECONDS: allowed timestamp drift for HMAC (default 300)
 // - REVALIDATE_IP_ALLOWLIST: optional comma-separated list of allowed IPs (exact match)
 // - REVALIDATE_RATE_LIMIT_MAX: max requests per window per IP (default 5)
 // - REVALIDATE_RATE_LIMIT_WINDOW_SECONDS: window length in seconds (default 60)
 // - REDIS_URL: optional Redis URL for distributed rate limiting
-// - REVALIDATE_ROUTE_ALLOWLIST: optional comma-separated list of allowed routes (exact match); if set, only these routes can be revalidated
+// - REVALIDATE_ROUTE_ALLOWLIST: optional comma-separated list of allowed routes (exact match)
+// - REVALIDATE_ROUTE_RETRIES: number of retries for failing route revalidations (default 3)
+// - REVALIDATE_ROUTE_RETRY_BASE_MS: base delay in ms for exponential backoff (default 200)
 
 const redisUrl = process.env.REDIS_URL || ''
 let redis: Redis | null = null
@@ -26,6 +32,10 @@ const RATE_LIMIT_MAX = parseInt(process.env.REVALIDATE_RATE_LIMIT_MAX || '5', 10
 const RATE_LIMIT_WINDOW = parseInt(process.env.REVALIDATE_RATE_LIMIT_WINDOW_SECONDS || '60', 10)
 const IP_ALLOWLIST = (process.env.REVALIDATE_IP_ALLOWLIST || '').split(',').map((s) => s.trim()).filter(Boolean)
 const ROUTE_ALLOWLIST = (process.env.REVALIDATE_ROUTE_ALLOWLIST || '').split(',').map((s) => s.trim()).filter(Boolean)
+const ROUTE_RETRIES = parseInt(process.env.REVALIDATE_ROUTE_RETRIES || '3', 10)
+const ROUTE_RETRY_BASE_MS = parseInt(process.env.REVALIDATE_ROUTE_RETRY_BASE_MS || '200', 10)
+const HMAC_SECRET = process.env.REVALIDATE_HMAC_SECRET || ''
+const HMAC_TOLERANCE_SECONDS = parseInt(process.env.REVALIDATE_HMAC_TOLERANCE_SECONDS || '300', 10)
 
 // In-memory fallback rate limiter (per-process)
 type RateInfo = { count: number; expiresAt: number }
@@ -67,9 +77,42 @@ async function incrementRate(ip: string): Promise<number> {
   return existing.count
 }
 
+// Read raw body so we can validate HMAC signatures reliably
+export const config = { api: { bodyParser: false } }
+
+function computeHmac(secret: string, timestamp: string, bodyStr: string) {
+  const h = crypto.createHmac('sha256', secret)
+  h.update(`${timestamp}.${bodyStr}`)
+  return h.digest('hex')
+}
+
+function timingSafeEqualHex(a: string, b: string) {
+  try {
+    const ab = Buffer.from(a, 'hex')
+    const bb = Buffer.from(b, 'hex')
+    if (ab.length !== bb.length) return false
+    return crypto.timingSafeEqual(ab, bb)
+  } catch (e) {
+    return false
+  }
+}
+
+async function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ message: 'Method not allowed. Use POST.' })
+  }
+
+  // Read raw body
+  let rawBody = ''
+  try {
+    const buf = await getRawBody(req)
+    rawBody = buf.toString()
+  } catch (err) {
+    console.warn('Failed to read raw body', (err as any)?.message)
   }
 
   const secretFromQuery = Array.isArray(req.query.secret) ? req.query.secret[0] : req.query.secret
@@ -82,6 +125,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (!secret || secret !== process.env.REVALIDATE_SECRET) {
     return res.status(401).json({ message: 'Invalid secret' })
+  }
+
+  // If HMAC secret is configured, validate signature
+  if (HMAC_SECRET) {
+    const sig = req.headers['x-revalidate-signature'] as string | undefined
+    const ts = req.headers['x-revalidate-timestamp'] as string | undefined
+    if (!sig || !ts) {
+      return res.status(401).json({ message: 'Missing HMAC signature or timestamp headers' })
+    }
+
+    const now = Math.floor(Date.now() / 1000)
+    const tnum = parseInt(ts, 10)
+    if (isNaN(tnum) || Math.abs(now - tnum) > HMAC_TOLERANCE_SECONDS) {
+      return res.status(401).json({ message: 'HMAC timestamp outside tolerance' })
+    }
+
+    const expected = computeHmac(HMAC_SECRET, ts, rawBody)
+    if (!timingSafeEqualHex(expected, sig)) {
+      return res.status(401).json({ message: 'Invalid HMAC signature' })
+    }
   }
 
   const ip = getClientIp(req)
@@ -104,9 +167,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // Determine routes to revalidate. Default list if none provided
   let routes: string[] = ['/jokes-isr', '/jokes-ssr']
   try {
-    if (req.body) {
-      // Accept JSON body with { routes: ["/path1", "/path2"] }
-      const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body
+    if (rawBody) {
+      const body = rawBody ? JSON.parse(rawBody) : {}
       if (body && Array.isArray(body.routes)) {
         routes = body.routes.map(String)
       }
@@ -137,15 +199,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   }
 
-  // Revalidate each route
-  const results: Record<string, { ok: boolean; error?: string }> = {}
+  // Revalidate each route with retries/backoff
+  const results: Record<string, { ok: boolean; attempts: number; error?: string }> = {}
   for (const route of routes) {
-    try {
-      await res.revalidate(route)
-      results[route] = { ok: true }
-    } catch (err: any) {
-      // Record failure but continue
-      results[route] = { ok: false, error: err?.message }
+    let attempt = 0
+    let ok = false
+    let lastErr: any = null
+    while (attempt < ROUTE_RETRIES) {
+      attempt += 1
+      try {
+        await res.revalidate(route)
+        ok = true
+        results[route] = { ok: true, attempts: attempt }
+        break
+      } catch (err: any) {
+        lastErr = err
+        const delay = ROUTE_RETRY_BASE_MS * Math.pow(2, attempt - 1)
+        console.warn(`Revalidate attempt ${attempt} failed for ${route}: ${err?.message}; retrying in ${delay}ms`)
+        await sleep(delay)
+      }
+    }
+
+    if (!ok) {
+      results[route] = { ok: false, attempts: attempt, error: lastErr?.message }
     }
   }
 

@@ -1,30 +1,51 @@
-# Revalidate endpoint: revalidate arbitrary routes, rate limiting and IP allowlist
+# Revalidate endpoint: HMAC validation, retries, rate limiting, and allowlists
 
-The revalidation endpoint at `/api/revalidate` now supports passing arbitrary routes in the POST body. It remains protected by `REVALIDATE_SECRET` and enforces optional IP allowlisting and rate limiting.
+The `/api/revalidate` endpoint now supports:
 
-Environment variables (summary):
+- Optional HMAC-signed requests for additional tamper-proof authentication
+  - Set `REVALIDATE_HMAC_SECRET` to enable. Clients must send two headers:
+    - `x-revalidate-timestamp`: unix timestamp (seconds)
+    - `x-revalidate-signature`: hex HMAC-SHA256 of `${timestamp}.${rawBody}`, using `REVALIDATE_HMAC_SECRET` as the key
+  - Default timestamp tolerance: `REVALIDATE_HMAC_TOLERANCE_SECONDS` (default 300)
 
-- REVALIDATE_SECRET (required): secret used to authorize requests
-- REVALIDATE_IP_ALLOWLIST (optional): comma-separated list of allowed IP addresses. If set, only requests from these IPs are accepted.
-- REVALIDATE_RATE_LIMIT_MAX (optional): max requests per window per IP (default 5)
-- REVALIDATE_RATE_LIMIT_WINDOW_SECONDS (optional): window length in seconds (default 60)
-- REDIS_URL (optional): if set, the server will use Redis for distributed rate limiting. Otherwise an in-memory per-process limiter is used.
-- REVALIDATE_ROUTE_ALLOWLIST (optional): comma-separated list of allowed route paths (exact match). If set, only routes in this allowlist can be revalidated.
+- Automatic retries with exponential backoff when revalidation of a route fails
+  - Configure retries with `REVALIDATE_ROUTE_RETRIES` (default 3)
+  - Configure base delay with `REVALIDATE_ROUTE_RETRY_BASE_MS` (default 200)
 
-Usage examples:
+- Existing protections still in place:
+  - `REVALIDATE_SECRET` (required)
+  - Optional `REVALIDATE_IP_ALLOWLIST`
+  - Rate limiting (`REVALIDATE_RATE_LIMIT_MAX`, `REVALIDATE_RATE_LIMIT_WINDOW_SECONDS`) with Redis-backed distributed limiter (`REDIS_URL`) or in-memory fallback
+  - Optional `REVALIDATE_ROUTE_ALLOWLIST` to restrict which routes can be revalidated
 
-- Revalidate default pages (no JSON body):
-  curl -X POST "https://your-domain.com/api/revalidate?secret=YOUR_SECRET"
+Client example (Node) to compute HMAC and call endpoint:
 
-- Revalidate specific routes (JSON body):
-  curl -X POST "https://your-domain.com/api/revalidate?secret=YOUR_SECRET" \
-    -H "Content-Type: application/json" \
-    -d '{"routes":["/jokes-isr","/some-other-page"]}'
+```js
+// Node example
+import crypto from 'crypto'
+import fetch from 'node-fetch'
 
-- Or send secret in header (recommended):
-  curl -X POST "https://your-domain.com/api/revalidate" -H "x-revalidate-secret: YOUR_SECRET" -H "Content-Type: application/json" -d '{"routes":["/jokes-isr"]}'
+const hmacSecret = process.env.REVALIDATE_HMAC_SECRET
+const revalidateUrl = 'https://your-domain.com/api/revalidate'
+const routes = ['/jokes-isr']
+const body = JSON.stringify({ routes })
+const timestamp = Math.floor(Date.now() / 1000).toString()
+const h = crypto.createHmac('sha256', hmacSecret)
+h.update(`${timestamp}.${body}`)
+const sig = h.digest('hex')
+
+await fetch(revalidateUrl + '?secret=YOUR_REVALIDATE_SECRET', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'x-revalidate-timestamp': timestamp,
+    'x-revalidate-signature': sig,
+  },
+  body,
+})
+```
 
 Notes:
-- The API validates that each route starts with `/` and limits the number of routes to 20 per request.
-- If `REVALIDATE_ROUTE_ALLOWLIST` is set, only routes contained in that allowlist can be revalidated (this is recommended for tighter security).
-- In multi-instance deployments, set `REDIS_URL` to a shared Redis instance so rate limiting works across instances.
+- Keep `REVALIDATE_HMAC_SECRET` and `REVALIDATE_SECRET` safe and do not commit them to source control.
+- In multi-instance deployments, set `REDIS_URL` so rate limiting is enforced across instances.
+- The endpoint returns per-route results including attempts and errors to help diagnose failures.
