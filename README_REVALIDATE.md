@@ -1,15 +1,23 @@
-# On-demand revalidation
+# Revalidate endpoint: rate limiting and IP allowlist
 
-This endpoint allows forcing ISR regeneration for the jokes page immediately. It is protected by the `REVALIDATE_SECRET` environment variable.
+The revalidation endpoint at `/api/revalidate` now supports optional IP allowlisting and rate limiting.
+
+Environment variables:
+
+- REVALIDATE_SECRET (required): secret used to authorize requests
+- REVALIDATE_IP_ALLOWLIST (optional): comma-separated list of allowed IP addresses. If set, only requests from these IPs are accepted.
+- REVALIDATE_RATE_LIMIT_MAX (optional): max requests per window per IP (default 5)
+- REVALIDATE_RATE_LIMIT_WINDOW_SECONDS (optional): window length in seconds (default 60)
+- REDIS_URL (optional): if set, the server will use Redis for distributed rate limiting. Otherwise an in-memory per-process limiter is used.
 
 Usage examples:
 
-- Curl (query param):
-
+- Call with secret in query string:
   curl -X POST "https://your-domain.com/api/revalidate?secret=YOUR_SECRET"
 
-- Curl (header):
-
+- Call with header (recommended):
   curl -X POST "https://your-domain.com/api/revalidate" -H "x-revalidate-secret: YOUR_SECRET"
 
-Set REVALIDATE_SECRET in your environment (locally in .env.local or in Vercel environment variables).
+Notes:
+- In multi-instance deployments, set REDIS_URL to a shared Redis instance so rate limiting works across instances.
+- IP allowlist supports exact IP matches. If you sit behind a proxy, ensure the proxy forwards the original client IP in `x-forwarded-for`.
