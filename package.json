@@ -12,7 +12,9 @@
     "next": "13.5.1",
     "react": "18.2.0",
     "react-dom": "18.2.0",
-    "stripe": "^12.14.0"
+    "stripe": "^12.14.0",
+    "@sendgrid/mail": "^8.7.0",
+    "raw-body": "^2.5.1"
   },
   "devDependencies": {
     "@types/node": "20.4.2",
