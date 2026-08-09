@@ -17,7 +17,9 @@
     "raw-body": "^2.5.1",
     "ioredis": "^5.3.2",
     "next-auth": "^4.22.1",
-    "better-sqlite3": "^8.4.0"
+    "better-sqlite3": "^8.4.0",
+    "speakeasy": "^2.0.0",
+    "qrcode": "^1.5.1"
   },
   "devDependencies": {
     "@types/node": "20.4.2",
