@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "migrate": "node-pg-migrate up",
+    "migrate:down": "node-pg-migrate down"
   },
   "dependencies": {
     "next": "13.5.1",
@@ -19,7 +21,8 @@
     "next-auth": "^4.22.1",
     "pg": "^8.11.0",
     "speakeasy": "^2.0.0",
-    "qrcode": "^1.5.1"
+    "qrcode": "^1.5.1",
+    "node-pg-migrate": "^7.0.0"
   },
   "devDependencies": {
     "@types/node": "20.4.2",
