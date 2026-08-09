@@ -1,34 +1,30 @@
-# SSO + Audit Logging
+# SSO + Audit Logging (Updated)
 
-This change replaces the previous password cookie admin auth with OAuth-based SSO using NextAuth, and adds persistent audit logs for admin revalidation actions using SQLite (better-sqlite3).
+This project enforces Google hosted-domain checks during sign-in and logs rejected sign-ins to the audit table.
 
-New environment variables to set
+New environment variable to set for Google domain enforcement:
 
-- NEXTAUTH_URL (required for NextAuth; e.g., https://your-domain.com)
-- NEXTAUTH_SECRET (required; set a long secret)
-- GITHUB_ID / GITHUB_SECRET (for GitHub provider) — optional
-- GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (for Google provider) — optional
-- ADMIN_PASSWORD is no longer required for the admin UI.
-- DB_DIR (optional) — directory to store SQLite DB files (defaults to ./data)
+- GOOGLE_HOSTED_DOMAIN=example.com
 
-How it works
+Behavior:
+- If GOOGLE_HOSTED_DOMAIN is set, only Google accounts with an email in that domain will be allowed to sign in.
+- Rejected sign-in attempts are recorded in the `auth_events` table with reason `sign_in_rejected`.
 
-- Sign in via /api/auth (NextAuth) using GitHub or Google providers (buttons on /admin will redirect to NextAuth sign-in flows).
-- The admin UI uses the NextAuth session (useSession) and calls /api/admin/revalidate.
-- /api/admin/revalidate runs server-side, calls the internal revalidate endpoint using server-side secrets (serverRevalidate), and writes an audit entry with the user name/email, routes, results, and timestamp into data/admin-audit.db.
+Audit tables
+- `auth_events` contains rejected sign-ins and reasons. Check `data/admin-audit.db` for entries.
 
-Where logs are stored
+Testing locally:
+- Set `GOOGLE_HOSTED_DOMAIN` in `.env.local` and restart the dev server.
+- Attempt to sign in with a Google account outside the domain — sign-in will be rejected and logged.
 
-- SQLite DB at: ./data/admin-audit.db (create the directory if it doesn't exist). Use DB_DIR env var to change path.
-- Table: revalidate_audit
+Example `.env.local` additions:
 
-Security notes
+NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_SECRET=some_long_secret
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_HOSTED_DOMAIN=your-domain.com
 
-- Keep NEXTAUTH_SECRET and provider secrets safe. Do NOT commit them to source control.
-- For production, prefer enabling both GITHUB and Google providers and use an allowlist for emails or GitHub orgs if you want to restrict admin access further.
-- Continue to use REVALIDATE_ROUTE_ALLOWLIST and IP allowlists on the revalidate endpoint for tighter control.
-
-Next steps (optional)
-
-- Add UI to view recent audit logs in the admin page.
-- Add role-based checks (e.g., only certain emails allowed). I can add an EMAIL_ALLOWLIST env var and enforce it in /api/admin/revalidate if you'd like.
+Notes:
+- If you run multiple instances, set `REDIS_URL` to enable caching for provider membership checks.
+- For production, ensure HTTPS and proper provider app configuration for callback URLs.
