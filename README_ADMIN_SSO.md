@@ -1,30 +1,17 @@
-# SSO + Audit Logging (Updated)
+## Redis caching for provider membership checks
 
-This project enforces Google hosted-domain checks during sign-in and logs rejected sign-ins to the audit table.
+If you run multiple instances of this app, it's strongly recommended to set `REDIS_URL` so provider membership checks (GitHub org/team, etc.) use a shared cache and avoid hitting provider rate limits.
 
-New environment variable to set for Google domain enforcement:
+Set REDIS_URL in your environment (example):
 
-- GOOGLE_HOSTED_DOMAIN=example.com
+- For Redis with a password:
+  REDIS_URL=redis://:password@redis-host:6379/0
+
+- For Redis without a password:
+  REDIS_URL=redis://redis-host:6379/0
 
 Behavior:
-- If GOOGLE_HOSTED_DOMAIN is set, only Google accounts with an email in that domain will be allowed to sign in.
-- Rejected sign-in attempts are recorded in the `auth_events` table with reason `sign_in_rejected`.
+- When `REDIS_URL` is set, the provider-checks use Redis to cache boolean membership results for a short TTL (default 300s).
+- When not set, an in-memory per-process cache is used (suitable for single-instance testing only).
 
-Audit tables
-- `auth_events` contains rejected sign-ins and reasons. Check `data/admin-audit.db` for entries.
-
-Testing locally:
-- Set `GOOGLE_HOSTED_DOMAIN` in `.env.local` and restart the dev server.
-- Attempt to sign in with a Google account outside the domain — sign-in will be rejected and logged.
-
-Example `.env.local` additions:
-
-NEXTAUTH_URL=http://localhost:3000
-NEXTAUTH_SECRET=some_long_secret
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-GOOGLE_HOSTED_DOMAIN=your-domain.com
-
-Notes:
-- If you run multiple instances, set `REDIS_URL` to enable caching for provider membership checks.
-- For production, ensure HTTPS and proper provider app configuration for callback URLs.
+Note: Do NOT commit secrets (like REDIS_URL) to source control; set them in your hosting platform's secure environment variables.

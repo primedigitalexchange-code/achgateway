@@ -31,6 +31,18 @@ db.prepare(`
   )
 `).run()
 
+// New table for auth events
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS auth_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_email TEXT,
+    provider TEXT,
+    event TEXT,
+    reason TEXT,
+    created_at INTEGER
+  )
+`).run()
+
 export function logRevalidation(userName: string | null, userEmail: string | null, routes: string[], results: any) {
   try {
     const stmt = db.prepare('INSERT INTO revalidate_audit (user_name, user_email, routes, results, created_at) VALUES (?, ?, ?, ?, ?)')
@@ -40,9 +52,13 @@ export function logRevalidation(userName: string | null, userEmail: string | nul
   }
 }
 
+export function getRevalidationLogs(limit = 50, offset = 0) {
+  const stmt = db.prepare('SELECT id, user_name, user_email, routes, results, created_at FROM revalidate_audit ORDER BY id DESC LIMIT ? OFFSET ?')
+  return stmt.all(limit, offset)
+}
+
 export function getRecentLogs(limit = 50) {
-  const stmt = db.prepare('SELECT * FROM revalidate_audit ORDER BY id DESC LIMIT ?')
-  return stmt.all(limit)
+  return getRevalidationLogs(limit, 0)
 }
 
 export function ensureUser(email: string, name?: string) {
@@ -80,4 +96,18 @@ export function getMfaForUser(email: string) {
     console.warn('Failed to get mfa for user', (err as any)?.message)
     return null
   }
+}
+
+export function logAuthEvent(userEmail: string | null, provider: string, reason: string) {
+  try {
+    const stmt = db.prepare('INSERT INTO auth_events (user_email, provider, event, reason, created_at) VALUES (?, ?, ?, ?, ?)')
+    stmt.run(userEmail || null, provider, 'sign_in_rejected', reason, Math.floor(Date.now() / 1000))
+  } catch (err) {
+    console.warn('Failed to write auth event', (err as any)?.message)
+  }
+}
+
+export function getAuthEvents(limit = 50, offset = 0) {
+  const stmt = db.prepare('SELECT id, user_email, provider, event, reason, created_at FROM auth_events ORDER BY id DESC LIMIT ? OFFSET ?')
+  return stmt.all(limit, offset)
 }
