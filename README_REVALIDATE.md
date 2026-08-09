@@ -1,12 +1,17 @@
-## Using Redis for distributed rate limiting & caching
+## Revalidate / Redis / Postgres notes
 
-For multi-instance deployments, set `REDIS_URL` so that:
+This project now supports Postgres for audit logs and Redis for caching/rate-limiting.
 
-- The revalidate rate limiter is shared across instances (prevents bypassing limits).
-- Provider membership checks (GitHub/org, GitHub/team) use a shared cache and avoid excessive provider API calls.
+Environment notes:
+- DATABASE_URL must be set to store audit logs in Postgres. Without it, audit functions become no-ops and warnings are logged.
+- REDIS_URL enables distributed caching and should be set in production for multi-instance deployments.
 
-Example Redis URL (do not commit this value):
+CSV export and retention endpoints:
+- GET /api/admin/logs/export/auth?limit=1000 -> downloads CSV of recent auth events
+- GET /api/admin/logs/export/revalidations?limit=1000 -> downloads CSV of recent revalidations
+- POST /api/admin/logs/retention { days: 90 } -> deletes audit rows older than given days
 
-REDIS_URL=redis://:password@redis.example.com:6379/0
+Alerting:
+- Configure SENDGRID_API_KEY and ALERT_EMAIL_FROM/ALERT_EMAIL_TO to receive email alerts.
+- Configure SLACK_WEBHOOK_URL to receive Slack alerts.
 
-If you don't set `REDIS_URL`, the app will fall back to an in-memory cache and per-process rate limits which are insufficient for multi-instance deployments.

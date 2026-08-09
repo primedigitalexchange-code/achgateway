@@ -1,0 +1,19 @@
+import type { NextApiRequest, NextApiResponse } from 'next'
+import { getServerSession } from 'next-auth/next'
+import { authOptions } from '../../auth/[...nextauth]'
+import { exportAuthEventsCsv } from '../../../lib/audit'
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const session = await getServerSession(req, res, authOptions)
+  if (!session) return res.status(401).json({ message: 'Not authenticated' })
+
+  const limit = Math.min(5000, Math.max(1, parseInt((req.query.limit as string) || '1000', 10)))
+  try {
+    const csv = await exportAuthEventsCsv(limit)
+    res.setHeader('Content-Type', 'text/csv')
+    res.setHeader('Content-Disposition', `attachment; filename="auth_events_${Date.now()}.csv"`)
+    res.send(csv)
+  } catch (err: any) {
+    res.status(500).json({ message: err?.message || 'Failed to export CSV' })
+  }
+}
